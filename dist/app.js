@@ -11,6 +11,8 @@ const SEARCH_FIELDS = [
   "title",
   "author_name",
   "cover_i",
+  "cover_edition_key",
+  "editions",
   "first_publish_year",
   "subject",
   "isbn",
@@ -20,14 +22,14 @@ const SEARCH_FIELDS = [
 ].join(",");
 
 const starterBooks = [
-  { key:"/works/OL5735363W", title:"Normal People", author:"Sally Rooney", cover_i:9251990, first_publish_year:2018, subjects:["Literary fiction","Relationships","Young adults"] },
-  { key:"/works/OL25794322W", title:"Tomorrow, and Tomorrow, and Tomorrow", author:"Gabrielle Zevin", cover_i:12845045, first_publish_year:2022, subjects:["Literary fiction","Friendship","Video games"] },
-  { key:"/works/OL19736040W", title:"Circe", author:"Madeline Miller", cover_i:8361654, first_publish_year:2018, subjects:["Mythology","Fantasy","Literary fiction"] },
-  { key:"/works/OL17356805W", title:"The Seven Husbands of Evelyn Hugo", author:"Taylor Jenkins Reid", cover_i:8231190, first_publish_year:2017, subjects:["Historical fiction","Relationships","Hollywood"] },
-  { key:"/works/OL17828419W", title:"Educated", author:"Tara Westover", cover_i:8258756, first_publish_year:2018, subjects:["Memoir","Family","Education"] },
-  { key:"/works/OL20893680W", title:"The Midnight Library", author:"Matt Haig", cover_i:10528037, first_publish_year:2020, subjects:["Fiction","Regret","Parallel worlds"] },
-  { key:"/works/OL16859568W", title:"A Little Life", author:"Hanya Yanagihara", cover_i:8235396, first_publish_year:2015, subjects:["Literary fiction","Friendship","Trauma"] },
-  { key:"/works/OL27884690W", title:"Lessons in Chemistry", author:"Bonnie Garmus", cover_i:12978532, first_publish_year:2022, subjects:["Historical fiction","Women scientists","Workplace"] }
+  { key:"/works/OL5735363W", title:"Normal People", author:"Sally Rooney", isbn:["9781984822185"], first_publish_year:2018, subjects:["Literary fiction","Relationships","Young adults"] },
+  { key:"/works/OL25794322W", title:"Tomorrow, and Tomorrow, and Tomorrow", author:"Gabrielle Zevin", isbn:["9780593321201"], first_publish_year:2022, subjects:["Literary fiction","Friendship","Video games"] },
+  { key:"/works/OL19736040W", title:"Circe", author:"Madeline Miller", isbn:["9780316556347"], first_publish_year:2018, subjects:["Mythology","Fantasy","Literary fiction"] },
+  { key:"/works/OL17356805W", title:"The Seven Husbands of Evelyn Hugo", author:"Taylor Jenkins Reid", isbn:["9781501161933"], first_publish_year:2017, subjects:["Historical fiction","Relationships","Hollywood"] },
+  { key:"/works/OL17828419W", title:"Educated", author:"Tara Westover", isbn:["9780399590504"], first_publish_year:2018, subjects:["Memoir","Family","Education"] },
+  { key:"/works/OL20893680W", title:"The Midnight Library", author:"Matt Haig", isbn:["9780525559474"], first_publish_year:2020, subjects:["Fiction","Regret","Parallel worlds"] },
+  { key:"/works/OL16859568W", title:"A Little Life", author:"Hanya Yanagihara", isbn:["9780804172707"], first_publish_year:2015, subjects:["Literary fiction","Friendship","Trauma"] },
+  { key:"/works/OL27884690W", title:"Lessons in Chemistry", author:"Bonnie Garmus", isbn:["9780385547345"], first_publish_year:2022, subjects:["Historical fiction","Women scientists","Workplace"] }
 ];
 
 const selected = new Map();
@@ -44,18 +46,26 @@ let extractorPromise = null;
 let isRecommending = false;
 
 function cover(book, size="M") {
-  if (book.cover_i) return `https://covers.openlibrary.org/b/id/${book.cover_i}-${size}.jpg`;
-  if (book.isbn?.length) return `https://covers.openlibrary.org/b/isbn/${book.isbn[0]}-${size}.jpg`;
+  if (book.cover_olid) return `https://covers.openlibrary.org/b/olid/${book.cover_olid}-${size}.jpg?default=false`;
+  if (book.isbn?.length) return `https://covers.openlibrary.org/b/isbn/${book.isbn[0]}-${size}.jpg?default=false`;
+  if (book.cover_i) return `https://covers.openlibrary.org/b/id/${book.cover_i}-${size}.jpg?default=false`;
   return "";
 }
 
 function normalizeBook(doc) {
+  const editions = doc.editions?.docs || [];
+  const preferredEdition = editions.find(e => e.cover_i || e.cover_edition_key || e.isbn?.length) || editions[0] || {};
+  const rawOlid = preferredEdition.key || doc.cover_edition_key || "";
+  const coverOlid = rawOlid ? String(rawOlid).replace("/books/", "") : null;
+  const editionIsbn = preferredEdition.isbn || [];
+
   return {
-    key: doc.key,
+    key: doc.key?.startsWith("/works/") ? doc.key : `/works/${doc.key}`,
     title: doc.title || "Untitled",
     author: doc.author_name?.[0] || "Unknown author",
-    cover_i: doc.cover_i || null,
-    isbn: doc.isbn || [],
+    cover_i: preferredEdition.cover_i || doc.cover_i || null,
+    cover_olid: coverOlid,
+    isbn: editionIsbn.length ? editionIsbn : (doc.isbn || []),
     first_publish_year: doc.first_publish_year || null,
     subjects: (doc.subject || []).slice(0, 12),
     ratings_average: Number(doc.ratings_average) || null,
@@ -169,7 +179,8 @@ function cleanSubject(subject) {
 function usefulSubjects(book) {
   const blocked = new Set([
     "fiction", "accessible book", "protected daisy", "juvenile fiction",
-    "large type books", "nyt:new_york_times_bestseller", "translations"
+    "large type books", "nyt:new_york_times_bestseller", "new york times bestseller",
+    "translations", "internet archive wishlist", "open library staff picks"
   ]);
   return (book.subjects || [])
     .map(cleanSubject)
@@ -268,6 +279,41 @@ function subjectOverlap(a, b) {
   return usefulSubjects(b).filter(s => left.has(s.toLowerCase()));
 }
 
+function stableVariant(book, count) {
+  const text = `${book.title}|${book.author}`;
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+  return Math.abs(hash) % count;
+}
+
+function naturalReason(candidate, nearest, shared, exploratory=false) {
+  const a = shared[0]?.toLowerCase();
+  const b = shared[1]?.toLowerCase();
+  const variant = stableVariant(candidate, 3);
+
+  if (shared.length >= 2) {
+    const options = [
+      `If ${a} and ${b} were part of what stayed with you in ${nearest.title}, this is a natural next stop.`,
+      `This shares ${a} and ${b} with ${nearest.title}, but takes them into a different story.`,
+      `A good follow-on from ${nearest.title}: familiar threads of ${a} and ${b}, without feeling like the same book twice.`
+    ];
+    return options[variant];
+  }
+
+  if (shared.length === 1) {
+    const options = [
+      `If the ${a} side of ${nearest.title} worked for you, this is worth a look.`,
+      `This picks up the ${a} thread from ${nearest.title} and takes it somewhere new.`,
+      `There is a little of ${nearest.title} here, especially around ${a}.`
+    ];
+    return options[variant];
+  }
+
+  return exploratory
+    ? `This sits a little farther from the books you chose — close enough to make sense, different enough to surprise you.`
+    : `This fits the overall shape of your shelf without leaning on one obvious shared theme.`;
+}
+
 function explanation(candidate, chosen, chosenEmbeddings, candidateEmbedding) {
   let bestIndex = 0;
   let bestScore = -Infinity;
@@ -281,14 +327,7 @@ function explanation(candidate, chosen, chosenEmbeddings, candidateEmbedding) {
 
   const nearest = chosen[bestIndex];
   const shared = subjectOverlap(nearest, candidate).slice(0, 2);
-
-  if (shared.length >= 2) {
-    return `Closest to ${nearest.title}, with shared themes around ${shared[0].toLowerCase()} and ${shared[1].toLowerCase()}.`;
-  }
-  if (shared.length === 1) {
-    return `Semantically close to ${nearest.title}, with overlap around ${shared[0].toLowerCase()}.`;
-  }
-  return `Semantically close to ${nearest.title}, but with a different mix of themes for a little more discovery.`;
+  return naturalReason(candidate, nearest, shared, shared.length === 0);
 }
 
 function diversify(items, limit=3) {
@@ -339,13 +378,7 @@ function metadataExplanation(candidate, chosen) {
     }
   }
 
-  if (shared.length >= 2) {
-    return `A strong semantic match to ${nearest.title}, with shared themes around ${shared[0].toLowerCase()} and ${shared[1].toLowerCase()}.`;
-  }
-  if (shared.length === 1) {
-    return `A semantic match to your reading profile, with ${shared[0].toLowerCase()} in common with ${nearest.title}.`;
-  }
-  return `A semantic match to the overall mix of books you chose, with a different set of themes for more discovery.`;
+  return naturalReason(candidate, nearest, shared.slice(0, 2), shared.length === 0);
 }
 
 function makeSections(scored) {
@@ -383,8 +416,8 @@ function makeSections(scored) {
 
   return [
     {
-      label:"Popular with readers like you",
-      sub:"The closest semantic matches to the books you chose.",
+      label:"Closest to your shelf",
+      sub:"Books that sit nearest to the mix of stories you chose.",
       books:familiar
     },
     {
@@ -463,6 +496,71 @@ async function buildRecommendations() {
   return { chosen, sections };
 }
 
+
+function descriptionText(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value?.value === "string") return value.value.trim();
+  return "";
+}
+
+async function fetchSynopsis(book) {
+  if (!book.key?.startsWith("/works/")) return "";
+  const workUrl = `https://openlibrary.org${book.key}.json`;
+  const response = await fetch(workUrl);
+  if (response.ok) {
+    const work = await response.json();
+    const description = descriptionText(work.description);
+    if (description) return description;
+  }
+
+  const editionsResponse = await fetch(`https://openlibrary.org${book.key}/editions.json?limit=12`);
+  if (editionsResponse.ok) {
+    const editions = await editionsResponse.json();
+    for (const edition of editions.entries || []) {
+      const description = descriptionText(edition.description);
+      if (description) return description;
+    }
+  }
+  return "";
+}
+
+function openBookModal(book) {
+  const modal = document.getElementById("book-modal");
+  const title = document.getElementById("modal-title");
+  const author = document.getElementById("modal-author");
+  const image = document.getElementById("modal-cover");
+  const synopsis = document.getElementById("modal-synopsis");
+  const source = document.getElementById("modal-source");
+
+  title.textContent = book.title;
+  author.textContent = book.author;
+  const imageUrl = cover(book, "L");
+  image.src = imageUrl;
+  image.alt = `Cover of ${book.title}`;
+  image.hidden = !imageUrl;
+  synopsis.textContent = "Loading synopsis…";
+  source.href = `https://openlibrary.org${book.key}`;
+
+  modal.showModal();
+
+  fetchSynopsis(book)
+    .then(text => {
+      synopsis.textContent = text || "No synopsis is available from Open Library for this edition yet.";
+    })
+    .catch(() => {
+      synopsis.textContent = "No synopsis is available from Open Library right now.";
+    });
+}
+
+document.getElementById("modal-close").addEventListener("click", () => {
+  document.getElementById("book-modal").close();
+});
+
+document.getElementById("book-modal").addEventListener("click", event => {
+  if (event.target === event.currentTarget) event.currentTarget.close();
+});
+
 function renderRecommendationResults(result) {
   document.getElementById("result-intro").textContent =
     `Inspired by ${result.chosen.map(b => b.title).slice(0,2).join(" and ")}${result.chosen.length > 2 ? " and more" : ""}.`;
@@ -481,19 +579,28 @@ function renderRecommendationResults(result) {
           ${section.books.map(book => {
             const image = cover(book);
             return `
-              <article class="rec-card">
+              <button type="button" class="rec-card" data-book-key="${escapeHtml(book.key)}" aria-label="Read about ${escapeHtml(book.title)}">
                 ${image ? `<img src="${image}" alt="Cover of ${escapeHtml(book.title)}" loading="lazy">` : ""}
-                <div>
+                <span class="rec-copy">
                   <span class="title">${escapeHtml(book.title)}</span>
                   <span class="author">${escapeHtml(book.author)}</span>
-                  <p class="why">${escapeHtml(book.reason)}</p>
-                </div>
-              </article>
+                  <span class="why">${escapeHtml(book.reason)}</span>
+                  <span class="details-cue">Read synopsis →</span>
+                </span>
+              </button>
             `;
           }).join("")}
         </div>
       </section>
     `).join("");
+
+  const bookByKey = new Map(result.sections.flatMap(section => section.books).map(book => [book.key, book]));
+  document.querySelectorAll(".rec-card[data-book-key]").forEach(card => {
+    card.addEventListener("click", () => {
+      const book = bookByKey.get(card.dataset.bookKey);
+      if (book) openBookModal(book);
+    });
+  });
 }
 
 async function showRecommendations() {
