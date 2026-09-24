@@ -1,7 +1,7 @@
 -- Afterword book catalogue
 -- Run in Supabase SQL Editor.
 
-create extension if not exists vector;
+create extension if not exists vector with schema extensions;
 
 create table if not exists public.books (
   openlibrary_key text primary key,
@@ -14,7 +14,7 @@ create table if not exists public.books (
   ratings_count integer not null default 0,
   edition_count integer not null default 0,
   metadata_text text not null,
-  embedding vector(384) not null,
+  embedding extensions.vector(384) not null,
   updated_at timestamptz not null default now()
 );
 
@@ -38,7 +38,7 @@ to anon, authenticated
 using (true);
 
 create or replace function public.match_books(
-  query_embedding vector(384),
+  query_embedding extensions.vector(384),
   match_count integer default 30,
   excluded_keys text[] default '{}'
 )
@@ -75,4 +75,4 @@ as $$
 $$;
 
 grant select on public.books to anon, authenticated;
-grant execute on function public.match_books(vector, integer, text[]) to anon, authenticated;
+grant execute on function public.match_books(extensions.vector, integer, text[]) to anon, authenticated;
