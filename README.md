@@ -10,7 +10,7 @@ The current public version combines **live Open Library search** with a **transf
 
 1. Search for books by title or author across Open Library.
 2. Select at least two books you enjoyed.
-3. Convert each selected book's metadata into a semantic embedding with **all-MiniLM-L6-v2**.
+3. Convert each selected book's metadata into a semantic embedding with **gte-small**.
 4. Discover candidate books from related subjects and authors.
 5. Embed the candidates with the same model and rank them by cosine similarity to the reader's combined taste vector.
 6. Rerank the results into:
@@ -36,7 +36,7 @@ Open Library Search API
 Selected books
         │
         ▼
-all-MiniLM-L6-v2
+gte-small
 (Transformers.js in browser)
         │
         ▼
@@ -52,7 +52,7 @@ semantic similarity + diversity/popularity reranking
 recommendation sections + grounded explanations
 ```
 
-The current site does not require an account and does not persist personal reading history.
+The current site does not require an account and does not persist personal reading history. The Supabase catalogue contains book metadata and embeddings only.
 
 ## Persistent catalogue
 
@@ -62,7 +62,7 @@ The repository also includes a **Supabase + pgvector** catalogue layer for the n
 - `scripts/seed_catalog.py` pulls book metadata from Open Library and generates 384-dimensional embeddings with Sentence Transformers.
 - `.env.example` documents the Supabase environment variables required for seeding.
 
-The public site currently works without this database. Connecting Supabase will make recommendation retrieval faster and reproducible, and will allow proper offline evaluation of the recommender.
+The public site is now connected to this Supabase catalogue for vector retrieval. Open Library remains the broad discovery/search source, while Supabase stores a curated recommendation catalogue with persistent embeddings. If the catalogue cannot return enough candidates, the site falls back to live Open Library candidate discovery.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the design decisions.
 
@@ -127,4 +127,4 @@ Book search and metadata come from **Open Library**. Cover images are referenced
 
 ## Stack
 
-**JavaScript · Transformers.js · all-MiniLM-L6-v2 · Open Library API · Python · Sentence Transformers · PostgreSQL · Supabase · pgvector**
+**JavaScript · Transformers.js · gte-small · Open Library API · Python · Sentence Transformers · PostgreSQL · Supabase · pgvector**
