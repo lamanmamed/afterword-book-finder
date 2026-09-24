@@ -18,6 +18,7 @@ The current public version combines **live Open Library search** with a **transf
    - **Something different** — relevant recommendations with more thematic distance;
    - **Hidden gems** — strong matches with a lighter popularity signal.
 7. Explain each recommendation using the nearest selected book and shared subjects rather than free-form generated claims.
+8. Open any recommendation to fetch its synopsis from the Open Library Work/Edition APIs.
 
 ## Why I built it
 
@@ -123,7 +124,7 @@ Never expose the Supabase service-role key in client-side code.
 
 ## Book metadata and covers
 
-Book search and metadata come from **Open Library**. Cover images are referenced through the Open Library Covers API rather than copied into this repository. Existing rights in individual cover artwork may still belong to their respective rights holders.
+Book search and metadata come from **Open Library**. For covers, Afterword prefers the best matching edition/ISBN instead of relying only on a work-level cover ID, then falls back when a cover is unavailable. Cover images are referenced through the Open Library Covers API rather than copied into this repository. Existing rights in individual cover artwork may still belong to their respective rights holders.
 
 ## Stack
 
