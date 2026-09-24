@@ -6,10 +6,10 @@ The public site is intentionally static and privacy-light:
 
 1. **Search** queries the Open Library Search API live.
 2. The selected books' title, author, subjects and publication year are converted into text.
-3. **Transformers.js** loads `all-MiniLM-L6-v2` in the browser and creates normalized 384-dimensional embeddings.
-4. Candidate books are discovered from Open Library using subjects and authors from the selected books.
-5. Candidate metadata is embedded with the same transformer.
-6. Cosine similarity ranks candidates against the reader's mean taste vector.
+3. **Transformers.js** loads `gte-small` in the browser and creates normalized 384-dimensional embeddings.
+4. The reader's mean taste vector is sent to Supabase.
+5. pgvector retrieves the nearest books from the persistent catalogue using cosine similarity.
+6. If the persistent catalogue is unavailable or too small for a useful result set, the site falls back to live Open Library candidate discovery and browser-side embedding.
 7. A small reranking step separates results into:
    - closest semantic matches;
    - related but more exploratory books;
