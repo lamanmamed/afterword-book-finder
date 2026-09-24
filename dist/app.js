@@ -1,7 +1,11 @@
 import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm";
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
 const OPEN_LIBRARY_SEARCH = "https://openlibrary.org/search.json";
-const MODEL_ID = "onnx-community/all-MiniLM-L6-v2-ONNX";
+const MODEL_ID = "Supabase/gte-small";
+const SUPABASE_URL = "https://gtpeifnmdmdahjgbcmlp.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_PdY3KGIOQy9WO31OenorGA_ltO6DDl5";
+const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const SEARCH_FIELDS = [
   "key",
   "title",
@@ -306,32 +310,45 @@ function diversify(items, limit=3) {
   return result;
 }
 
-async function buildRecommendations() {
-  const chosen = [...selected.values()];
-  const candidates = await discoverCandidates(chosen);
-  if (candidates.length < 6) throw new Error("Not enough candidate books found.");
+function databaseBook(row) {
+  return {
+    key: row.openlibrary_key,
+    title: row.title,
+    author: row.author,
+    cover_i: row.cover_id,
+    first_publish_year: row.first_publish_year,
+    subjects: row.subjects || [],
+    ratings_average: Number(row.ratings_average) || null,
+    ratings_count: Number(row.ratings_count) || 0,
+    edition_count: Number(row.edition_count) || 0,
+    semantic: Number(row.similarity) || 0
+  };
+}
 
-  const [chosenEmbeddings, candidateEmbeddings] = await Promise.all([
-    embedBooks(chosen),
-    embedBooks(candidates)
-  ]);
+function metadataExplanation(candidate, chosen) {
+  let nearest = chosen[0];
+  let shared = [];
+  let bestOverlap = -1;
 
-  const tasteVector = meanVector(chosenEmbeddings);
+  for (const selectedBook of chosen) {
+    const overlap = subjectOverlap(selectedBook, candidate);
+    if (overlap.length > bestOverlap) {
+      bestOverlap = overlap.length;
+      nearest = selectedBook;
+      shared = overlap;
+    }
+  }
 
-  const scored = candidates.map((book, index) => {
-    const semantic = dot(tasteVector, candidateEmbeddings[index]);
-    const popularity = Math.log10((book.ratings_count || 0) + (book.edition_count || 0) * 5 + 10);
-    const overlap = chosen.reduce((n, selectedBook) => n + subjectOverlap(selectedBook, book).length, 0);
-    return {
-      ...book,
-      semantic,
-      popularity,
-      overlap,
-      embedding: candidateEmbeddings[index],
-      reason: explanation(book, chosen, chosenEmbeddings, candidateEmbeddings[index])
-    };
-  });
+  if (shared.length >= 2) {
+    return `A strong semantic match to ${nearest.title}, with shared themes around ${shared[0].toLowerCase()} and ${shared[1].toLowerCase()}.`;
+  }
+  if (shared.length === 1) {
+    return `A semantic match to your reading profile, with ${shared[0].toLowerCase()} in common with ${nearest.title}.`;
+  }
+  return `A semantic match to the overall mix of books you chose, with a different set of themes for more discovery.`;
+}
 
+function makeSections(scored) {
   const familiar = diversify(
     [...scored].sort((a,b) => (b.semantic + b.overlap * 0.01) - (a.semantic + a.overlap * 0.01)),
     3
@@ -340,10 +357,10 @@ async function buildRecommendations() {
   const familiarKeys = new Set(familiar.map(x => x.key));
   const different = diversify(
     [...scored]
-      .filter(x => !familiarKeys.has(x.key) && x.semantic > 0.25)
+      .filter(x => !familiarKeys.has(x.key) && x.semantic > 0.2)
       .sort((a,b) => {
-        const aScore = a.semantic - a.overlap * 0.015;
-        const bScore = b.semantic - b.overlap * 0.015;
+        const aScore = a.semantic - a.overlap * 0.02;
+        const bScore = b.semantic - b.overlap * 0.02;
         return bScore - aScore;
       }),
     3
@@ -354,7 +371,7 @@ async function buildRecommendations() {
   const medianPopularity = popularityValues[Math.floor(popularityValues.length / 2)] || 0;
   const hidden = diversify(
     [...scored]
-      .filter(x => !used.has(x.key) && x.popularity <= medianPopularity && x.semantic > 0.2)
+      .filter(x => !used.has(x.key) && x.popularity <= medianPopularity && x.semantic > 0.18)
       .sort((a,b) => b.semantic - a.semantic),
     3
   );
@@ -364,26 +381,86 @@ async function buildRecommendations() {
     3
   );
 
-  return {
-    chosen,
-    sections: [
-      {
-        label:"Popular with readers like you",
-        sub:"The closest semantic matches to the books you chose.",
-        books:familiar
-      },
-      {
-        label:"Something different",
-        sub:"Still connected to your taste, with more room for discovery.",
-        books:different.length ? different : fallback
-      },
-      {
-        label:"Hidden gems",
-        sub:"Strong semantic matches with a lighter popularity signal.",
-        books:hidden.length ? hidden : fallback
-      }
-    ]
-  };
+  return [
+    {
+      label:"Popular with readers like you",
+      sub:"The closest semantic matches to the books you chose.",
+      books:familiar
+    },
+    {
+      label:"Something different",
+      sub:"Still connected to your taste, with more room for discovery.",
+      books:different.length ? different : fallback
+    },
+    {
+      label:"Hidden gems",
+      sub:"Strong semantic matches with a lighter popularity signal.",
+      books:hidden.length ? hidden : fallback
+    }
+  ];
+}
+
+async function recommendationsFromDatabase(chosen, chosenEmbeddings, tasteVector) {
+  const { data, error } = await supabase.rpc("match_books", {
+    query_embedding: tasteVector,
+    match_count: 60,
+    excluded_keys: chosen.map(book => book.key)
+  });
+
+  if (error) throw error;
+  if (!Array.isArray(data) || data.length < 9) {
+    throw new Error("The persistent catalogue does not yet contain enough candidates.");
+  }
+
+  const scored = data.map(row => {
+    const book = databaseBook(row);
+    const overlap = chosen.reduce((n, selectedBook) => n + subjectOverlap(selectedBook, book).length, 0);
+    return {
+      ...book,
+      popularity: Math.log10((book.ratings_count || 0) + (book.edition_count || 0) * 5 + 10),
+      overlap,
+      reason: metadataExplanation(book, chosen)
+    };
+  });
+
+  return makeSections(scored);
+}
+
+async function recommendationsFromLiveSearch(chosen, chosenEmbeddings, tasteVector) {
+  const candidates = await discoverCandidates(chosen);
+  if (candidates.length < 6) throw new Error("Not enough candidate books found.");
+
+  const candidateEmbeddings = await embedBooks(candidates);
+  const scored = candidates.map((book, index) => {
+    const semantic = dot(tasteVector, candidateEmbeddings[index]);
+    const popularity = Math.log10((book.ratings_count || 0) + (book.edition_count || 0) * 5 + 10);
+    const overlap = chosen.reduce((n, selectedBook) => n + subjectOverlap(selectedBook, book).length, 0);
+    return {
+      ...book,
+      semantic,
+      popularity,
+      overlap,
+      reason: explanation(book, chosen, chosenEmbeddings, candidateEmbeddings[index])
+    };
+  });
+
+  return makeSections(scored);
+}
+
+async function buildRecommendations() {
+  const chosen = [...selected.values()];
+  const chosenEmbeddings = await embedBooks(chosen);
+  const tasteVector = meanVector(chosenEmbeddings);
+
+  let sections;
+  try {
+    sections = await recommendationsFromDatabase(chosen, chosenEmbeddings, tasteVector);
+  } catch (error) {
+    console.warn("Supabase catalogue unavailable; falling back to live candidate discovery.", error);
+    sections = await recommendationsFromLiveSearch(chosen, chosenEmbeddings, tasteVector);
+  }
+
+  return { chosen, sections };
 }
 
 function renderRecommendationResults(result) {
