@@ -1,8 +1,8 @@
 # Afterword architecture
 
-## Current public version
+## Current version
 
-The public site is intentionally static and privacy-light:
+The current site is intentionally static and privacy-light:
 
 1. **Search** queries the Open Library Search API live.
 2. The selected books' title, author, subjects and publication year are converted into text.
