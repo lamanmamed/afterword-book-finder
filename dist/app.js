@@ -45,11 +45,30 @@ let searchController = null;
 let extractorPromise = null;
 let isRecommending = false;
 
+function coverCandidates(book, size="M") {
+  const urls = [];
+  if (book.cover_olid) urls.push(`https://covers.openlibrary.org/b/olid/${book.cover_olid}-${size}.jpg?default=false`);
+  if (book.isbn?.length) urls.push(`https://covers.openlibrary.org/b/isbn/${book.isbn[0]}-${size}.jpg?default=false`);
+  if (book.cover_i) urls.push(`https://covers.openlibrary.org/b/id/${book.cover_i}-${size}.jpg?default=false`);
+  return [...new Set(urls)];
+}
+
 function cover(book, size="M") {
-  if (book.cover_olid) return `https://covers.openlibrary.org/b/olid/${book.cover_olid}-${size}.jpg?default=false`;
-  if (book.isbn?.length) return `https://covers.openlibrary.org/b/isbn/${book.isbn[0]}-${size}.jpg?default=false`;
-  if (book.cover_i) return `https://covers.openlibrary.org/b/id/${book.cover_i}-${size}.jpg?default=false`;
-  return "";
+  return coverCandidates(book, size)[0] || "";
+}
+
+function attachCoverFallback(img, book, size="M") {
+  if (!img) return;
+  const candidates = coverCandidates(book, size);
+  let index = 0;
+  img.addEventListener("error", () => {
+    index += 1;
+    if (index < candidates.length) {
+      img.src = candidates[index];
+    } else {
+      img.hidden = true;
+    }
+  });
 }
 
 function normalizeBook(doc) {
@@ -110,6 +129,7 @@ function renderGrid(books) {
       <span class="title">${escapeHtml(book.title)}</span>
       <span class="author">${escapeHtml(book.author)}</span>
     `;
+    attachCoverFallback(button.querySelector("img"), book, "M");
 
     button.addEventListener("click", () => {
       if (selected.has(book.key)) selected.delete(book.key);
@@ -129,7 +149,7 @@ async function searchOpenLibrary(query, limit=24) {
     q: query,
     limit: String(limit),
     fields: SEARCH_FIELDS,
-    language: "eng"
+    lang: "en"
   });
   const response = await fetch(`${OPEN_LIBRARY_SEARCH}?${params.toString()}`, {
     signal: searchController?.signal
@@ -539,6 +559,10 @@ function openBookModal(book) {
   image.src = imageUrl;
   image.alt = `Cover of ${book.title}`;
   image.hidden = !imageUrl;
+  if (imageUrl) {
+    image.hidden = false;
+    attachCoverFallback(image, book, "L");
+  }
   synopsis.textContent = "Loading synopsis…";
   source.href = `https://openlibrary.org${book.key}`;
 
@@ -596,8 +620,9 @@ function renderRecommendationResults(result) {
 
   const bookByKey = new Map(result.sections.flatMap(section => section.books).map(book => [book.key, book]));
   document.querySelectorAll(".rec-card[data-book-key]").forEach(card => {
+    const book = bookByKey.get(card.dataset.bookKey);
+    if (book) attachCoverFallback(card.querySelector("img"), book, "M");
     card.addEventListener("click", () => {
-      const book = bookByKey.get(card.dataset.bookKey);
       if (book) openBookModal(book);
     });
   });
