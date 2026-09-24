@@ -50,7 +50,7 @@ DEFAULT_QUERIES = [
     'subject:"young adult fiction"',
 ]
 
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+MODEL_NAME = "Supabase/gte-small"
 
 
 def clean_subjects(values: Iterable[str] | None) -> list[str]:
