@@ -53,7 +53,7 @@ let searchController = null;
 let extractorPromise = null;
 let isRecommending = false;
 
-function coverCandidates(book, size="M") {function coverCandidates(book, size="M") {
+function coverCandidates(book, size="M") {
   const urls = [];
   if (book.cover_olid) urls.push(`https://covers.openlibrary.org/b/olid/${book.cover_olid}-${size}.jpg?default=false`);
   if (book.isbn?.length) urls.push(`https://covers.openlibrary.org/b/isbn/${book.isbn[0]}-${size}.jpg?default=false`);
@@ -828,7 +828,7 @@ function openMediaModal(item, mode) {
     });
 }
 
-document.getElementById("modal-close")document.getElementById("modal-close").addEventListener("click", () => {
+document.getElementById("modal-close").addEventListener("click", () => {
   document.getElementById("book-modal").close();
 });
 
@@ -932,7 +932,7 @@ async function showRecommendations() {
   }
 }
 
-function route() {function route() {
+function route() {
   const result = location.hash === "#recommendations" &&
     document.getElementById("collections").children.length > 0;
 
@@ -1025,5 +1025,4 @@ document.getElementById("back").addEventListener("click", () => {
 window.addEventListener("hashchange", route);
 
 renderGrid(starterBooks);
-route();renderGrid(starterBooks);
 route();
