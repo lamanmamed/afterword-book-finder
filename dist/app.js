@@ -294,7 +294,7 @@ searchInput.addEventListener("input", () => {
   searchTimer = setTimeout(handleSearch, 320);
 });
 
-function cleanSubject(subject) {function cleanSubject(subject) {
+function cleanSubject(subject) {
   return String(subject || "")
     .replace(/[()]/g, "")
     .replace(/\s+/g, " ")
