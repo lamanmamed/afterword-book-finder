@@ -1,6 +1,6 @@
 # Afterword book finder
 
-Afterword is a personal book discovery project that turns a reader's favourite books into recommendations based on semantic similarity, subject overlap and discovery-oriented reranking.
+Afterword is a personal recommendation project that currently turns a reader's favourite books into recommendations based on semantic similarity, subject overlap and discovery-oriented reranking. The next expansion adds films while keeping the same taste-based recommendation idea.
 
 The project is not currently publicly hosted. If you want to try it, run it locally using the steps below.
 
@@ -18,13 +18,31 @@ The project is not currently publicly hosted. If you want to try it, run it loca
 7. Explain recommendations using the selected books and shared themes.
 8. Open any recommended book to fetch its synopsis from Open Library.
 
+## Movies foundation
+
+The movie catalogue is intentionally additive so the working book recommender does not need to be rewritten before the film experience is ready.
+
+- `supabase/movies.sql` creates a public-read movie catalogue, an HNSW vector index, `match_movies`, and `search_movies`.
+- `scripts/seed_movies.py` pulls a broad movie set from TMDB, builds metadata text, embeds it with the same 384-dimensional `gte-small` model, and upserts it into Supabase.
+- The TMDB access token is only used by the server-side seeding script and should never be exposed in browser JavaScript.
+- A later UI step can search the local movie catalogue through Supabase and create a movie taste vector using the same embedding space as the catalogue.
+
+To initialise the movie catalogue, first run `supabase/movies.sql` in the Supabase SQL Editor, then:
+
+```bash
+pip install -r scripts/requirements.txt
+python scripts/seed_movies.py --pages-per-genre 3
+```
+
+Set `TMDB_READ_ACCESS_TOKEN` in your local `.env` before running the seeder.
+
 ## Why I built it
 
-I wanted to explore a recommendation problem that felt personal to me: how do you recommend books that are recognisably suited to someone's taste without returning the same kind of book over and over again?
+I wanted to explore a recommendation problem that felt personal to me: how do you recommend stories that are recognisably suited to someone's taste without returning the same kind of thing over and over again?
 
 The project focuses on the trade-off between **familiarity and discovery**. The next evaluation step is to measure that trade-off using relevance, intra-list diversity, novelty and catalogue coverage.
 
-## How the recommender works
+## How the book recommender works
 
 ```text
 Open Library search
@@ -48,7 +66,7 @@ Diversity and popularity reranking
 Closest to your shelf / Something different / Hidden gems
 ```
 
-The browser does not store personal reading history. Supabase stores book metadata and embeddings only.
+The browser does not store personal reading history. Supabase stores catalogue metadata and embeddings only.
 
 ## A couple of implementation snippets
 
@@ -83,9 +101,11 @@ Recommendation text is grounded in actual shared subjects and the nearest select
 │   └── path-cover.webp
 ├── scripts/
 │   ├── seed_catalog.py
+│   ├── seed_movies.py
 │   └── requirements.txt
 ├── supabase/
-│   └── schema.sql
+│   ├── schema.sql
+│   └── movies.sql
 ├── .env.example
 ├── ARCHITECTURE.md
 └── README.md
@@ -137,26 +157,28 @@ The transformer model is downloaded the first time you request recommendations a
 The project uses **Supabase + pgvector** for persistent recommendation retrieval.
 
 - `supabase/schema.sql` creates the book table, vector index and similarity function.
-- `scripts/seed_catalog.py` pulls metadata from Open Library and creates embeddings.
+- `scripts/seed_catalog.py` pulls metadata from Open Library and creates book embeddings.
+- `supabase/movies.sql` creates the movie table and movie search/retrieval functions.
+- `scripts/seed_movies.py` pulls movie metadata from TMDB and creates movie embeddings.
 - `.env.example` documents the environment variables needed for catalogue seeding.
 
-To build your own catalogue:
+To build your own book catalogue:
 
 ```bash
 pip install -r scripts/requirements.txt
 python scripts/seed_catalog.py --limit-per-query 250
 ```
 
-Never expose the Supabase service-role key in browser code.
+Never expose the Supabase service-role key or TMDB read access token in browser code.
 
-## Book metadata and covers
+## Metadata and artwork
 
 Book search, metadata, synopses and cover references come from **Open Library**.
 
-For covers, Afterword prefers an edition or ISBN-specific image instead of relying only on a work-level cover ID. This reduces mismatched historical scans and gives more consistent results.
+Movie catalogue metadata comes from **TMDB**. Poster paths are stored as references rather than copied into this repository.
 
-Cover artwork is referenced through the Open Library Covers API rather than copied into this repository. Rights in individual cover artwork may belong to publishers, artists or other rights holders.
+For book covers, Afterword prefers an edition or ISBN-specific image instead of relying only on a work-level cover ID. This reduces mismatched historical scans and gives more consistent results.
 
 ## Stack
 
-**JavaScript · Transformers.js · gte-small · Open Library API · Python · Sentence Transformers · PostgreSQL · Supabase · pgvector**
+**JavaScript · Transformers.js · gte-small · Open Library API · TMDB API · Python · Sentence Transformers · PostgreSQL · Supabase · pgvector**
