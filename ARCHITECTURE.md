@@ -2,7 +2,7 @@
 
 ## Current version
 
-The current site is intentionally static and privacy-light:
+The current public-facing site is intentionally static and privacy-light:
 
 1. **Search** queries the Open Library Search API live.
 2. The selected books' title, author, subjects and publication year are converted into text.
@@ -20,9 +20,9 @@ No account or personal reading history is stored by the current site.
 
 ## Persistent catalogue layer
 
-The `supabase/` and `scripts/` directories add an optional production-style catalogue.
+The `supabase/` and `scripts/` directories provide the production-style catalogue layer.
 
-Supabase stores:
+The book catalogue stores:
 - Open Library work key;
 - title and author;
 - cover ID;
@@ -34,25 +34,48 @@ Supabase stores:
 
 The `match_books` SQL function performs cosine similarity search through pgvector.
 
-### Why keep Open Library for search?
+## Movie expansion
+
+Movies are being added as an additive catalogue first, before the UI is refactored.
+
+`supabase/movies.sql` adds:
+- TMDB movie ID;
+- title and original title;
+- release year;
+- genres and overview;
+- poster path;
+- TMDB popularity/vote metadata;
+- the exact embedded metadata text;
+- a 384-dimensional `gte-small` embedding.
+
+`match_movies` mirrors the book cosine-similarity retrieval pattern. `search_movies` provides safe public catalogue search without putting the TMDB access token in the browser.
+
+`scripts/seed_movies.py` uses the TMDB API only during catalogue ingestion. It samples across multiple genres, deduplicates TMDB IDs, embeds movie metadata with the same model as the current book system, and upserts the result into Supabase.
+
+Keeping book and movie embeddings model-compatible gives us a clean path to a shared taste layer later, while avoiding a breaking migration of the working book experience right now.
+
+## Why keep Open Library for book search?
 
 Live Open Library search gives the user a broad catalogue without requiring Afterword to mirror the entire bibliographic database.
 
-### Why add a local vector catalogue?
+## Why keep local vector catalogues?
 
-A local vector catalogue makes recommendation retrieval faster, reproducible and easier to evaluate. It also prevents recommendation generation from depending on a fresh set of Open Library search results each time.
+A local vector catalogue makes recommendation retrieval faster, reproducible and easier to evaluate. It also prevents recommendation generation from depending on a fresh external search result set each time.
 
-## Covers and attribution
+For movies, the local catalogue additionally lets the browser search safely without exposing a TMDB read token.
 
-Afterword references cover images through Open Library's Covers API rather than copying cover files into this repository. Book-cover copyrights may belong to publishers, artists or other rights holders; the project does not claim ownership of those images.
+## Artwork and attribution
 
-## Next evaluation step
+Afterword references book cover images through Open Library's Covers API rather than copying cover files into this repository. Movie poster paths are retained as TMDB references rather than checked into the repository.
 
-Once the persistent catalogue is populated, evaluate the recommender on:
-- semantic relevance;
-- intra-list diversity;
-- author repetition;
-- catalogue coverage;
-- novelty/popularity trade-offs.
+## Next product steps
 
-This allows the product question to become measurable: **how much relevance should Afterword trade for discovery?**
+1. Seed and validate the movie catalogue.
+2. Add a Books / Films mode switch without changing the visual identity.
+3. Build movie selection, persistent selection during search, and movie recommendation results.
+4. Add explicit feedback signals such as save, not interested, already read/watched and rating.
+5. Introduce a shared taste representation across books and films.
+6. Add natural-language discovery on top of deterministic retrieval.
+7. Evaluate relevance, diversity, novelty and catalogue coverage before adding music.
+
+The core product question remains measurable: **how much relevance should Afterword trade for discovery?**
