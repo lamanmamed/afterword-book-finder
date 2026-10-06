@@ -1,11 +1,7 @@
-import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm";
-import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+import { fetchJSON, rpc } from "./catalog.js";
 
 const OPEN_LIBRARY_SEARCH = "https://openlibrary.org/search.json";
 const MODEL_ID = "Supabase/gte-small";
-const SUPABASE_URL = "https://gtpeifnmdmdahjgbcmlp.supabase.co";
-const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_PdY3KGIOQy9WO31OenorGA_ltO6DDl5";
-const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const SEARCH_FIELDS = [
   "key",
   "title",
@@ -44,6 +40,7 @@ let searchTimer = null;
 let searchController = null;
 let extractorPromise = null;
 let isRecommending = false;
+let searchVersion = 0;
 
 function coverCandidates(book, size="M") {
   const urls = [];
@@ -144,47 +141,43 @@ function renderGrid(books) {
   updateCounter();
 }
 
-async function searchOpenLibrary(query, limit=24) {
+async function searchOpenLibrary(query, limit=24, signal) {
   const params = new URLSearchParams({
     q: query,
     limit: String(limit),
     fields: SEARCH_FIELDS,
     lang: "en"
   });
-  const response = await fetch(`${OPEN_LIBRARY_SEARCH}?${params.toString()}`, {
-    signal: searchController?.signal
-  });
-  if (!response.ok) throw new Error(`Open Library search failed: ${response.status}`);
-  const data = await response.json();
+  const data = await fetchJSON(`${OPEN_LIBRARY_SEARCH}?${params.toString()}`, { signal });
   return (data.docs || [])
     .filter(doc => doc.key && doc.title && doc.author_name?.length)
     .map(normalizeBook);
 }
 
 async function handleSearch() {
+  const version = ++searchVersion;
   const query = searchInput.value.trim();
-  if (query.length < 2) {
-    if (searchController) searchController.abort();
-    renderGrid(starterBooks);
-    return;
-  }
-
-  if (searchController) searchController.abort();
+  searchController?.abort();
   searchController = new AbortController();
-
+  const signal = searchController.signal;
+  if (query.length < 2) { renderGrid(starterBooks); return; }
   noMatches.hidden = true;
   try {
-    const results = await searchOpenLibrary(query);
+    const results = await searchOpenLibrary(query, 24, signal);
+    if (version !== searchVersion) return;
+    noMatches.textContent = "No books match your search.";
     renderGrid(results);
   } catch (error) {
-    if (error.name === "AbortError") return;
-    console.error(error);
-    noMatches.textContent = "Search is temporarily unavailable. Try again.";
+    if (signal.aborted || version !== searchVersion) return;
+    console.warn(error);
+    noMatches.textContent = "Search is temporarily unavailable. Please try again.";
     noMatches.hidden = false;
   }
 }
 
 searchInput.addEventListener("input", () => {
+  ++searchVersion;
+  searchController?.abort();
   clearTimeout(searchTimer);
   searchTimer = setTimeout(handleSearch, 320);
 });
@@ -220,9 +213,9 @@ function metadataText(book) {
 
 async function getExtractor() {
   if (!extractorPromise) {
-    extractorPromise = pipeline("feature-extraction", MODEL_ID, {
-      dtype: "q8"
-    });
+    extractorPromise = import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm")
+      .then(({ pipeline }) => pipeline("feature-extraction", MODEL_ID, { dtype: "q8" }))
+      .catch(error => { extractorPromise = null; throw error; });
   }
   return extractorPromise;
 }
@@ -275,17 +268,14 @@ async function discoverCandidates(chosen) {
   }
 
   const batches = await Promise.allSettled(
-    queries.slice(0, 7).map(async query => {
-      searchController = new AbortController();
-      return searchOpenLibrary(query, 18);
-    })
+    queries.slice(0, 7).map(query => searchOpenLibrary(query, 18))
   );
 
   const byKey = new Map();
   for (const batch of batches) {
     if (batch.status !== "fulfilled") continue;
     for (const book of batch.value) {
-      if (selected.has(book.key)) continue;
+      if (chosen.some(item => item.key === book.key)) continue;
       if (!book.cover_i && !book.isbn?.length) continue;
       if (!byKey.has(book.key)) byKey.set(book.key, book);
     }
@@ -454,13 +444,12 @@ function makeSections(scored) {
 }
 
 async function recommendationsFromDatabase(chosen, chosenEmbeddings, tasteVector) {
-  const { data, error } = await supabase.rpc("match_books", {
+  const data = await rpc("match_books", {
     query_embedding: tasteVector,
     match_count: 60,
     excluded_keys: chosen.map(book => book.key)
   });
 
-  if (error) throw error;
   if (!Array.isArray(data) || data.length < 9) {
     throw new Error("The persistent catalogue does not yet contain enough candidates.");
   }

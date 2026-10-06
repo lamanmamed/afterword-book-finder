@@ -160,3 +160,16 @@ Cover artwork is referenced through the Open Library Covers API rather than copi
 ## Stack
 
 **JavaScript · Transformers.js · gte-small · Open Library API · Python · Sentence Transformers · PostgreSQL · Supabase · pgvector**
+
+## Reliability and hosting
+
+The interface loads independently of the transformer model. Catalogue requests time out after eight seconds; if Supabase is unavailable, recommendations use Open Library candidates and browser-side embeddings. Model loading can be retried after a failure.
+
+`.github/workflows/pages.yml` publishes `dist/` to GitHub Pages on pushes to `main`. To activate it, choose **GitHub Actions** under repository **Settings → Pages**, then run **Deploy Afterword**. The workflow does not enable Pages itself and needs no deployment secrets. The existing Amplify configuration remains available.
+
+Check the recovery helpers with:
+
+```bash
+node --check dist/app.js
+node --test tests/catalog.test.mjs
+```
