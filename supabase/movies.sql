@@ -22,7 +22,7 @@ create table if not exists public.movies (
 
 create index if not exists movies_embedding_hnsw
 on public.movies
-using hnsw (embedding vector_cosine_ops);
+using hnsw (embedding extensions.vector_cosine_ops);
 
 create index if not exists movies_title_idx
 on public.movies using gin (to_tsvector('simple', title));
@@ -56,6 +56,8 @@ returns table (
 )
 language sql
 stable
+security invoker
+set search_path = ''
 as $$
   select
     m.tmdb_id,
@@ -68,11 +70,11 @@ as $$
     m.popularity,
     m.vote_average,
     m.vote_count,
-    1 - (m.embedding <=> query_embedding) as similarity
+    1 - (m.embedding OPERATOR(extensions.<=>) query_embedding) as similarity
   from public.movies m
-  where not (m.tmdb_id = any(excluded_ids))
-  order by m.embedding <=> query_embedding
-  limit greatest(match_count, 1);
+  where not (m.tmdb_id = any(coalesce(excluded_ids, '{}')))
+  order by m.embedding OPERATOR(extensions.<=>) query_embedding
+  limit least(greatest(coalesce(match_count, 30), 1), 100);
 $$;
 
 create or replace function public.search_movies(
@@ -93,6 +95,8 @@ returns table (
 )
 language sql
 stable
+security invoker
+set search_path = ''
 as $$
   select
     m.tmdb_id,
@@ -119,7 +123,7 @@ as $$
     end,
     m.vote_count desc,
     m.popularity desc
-  limit greatest(result_count, 1);
+  limit least(greatest(coalesce(result_count, 24), 1), 100);
 $$;
 
 grant select on public.movies to anon, authenticated;

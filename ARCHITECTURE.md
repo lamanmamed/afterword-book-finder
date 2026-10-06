@@ -36,7 +36,7 @@ The `match_books` SQL function performs cosine similarity search through pgvecto
 
 ## Movie expansion
 
-Movies are being added as an additive catalogue first, before the UI is refactored.
+The draft film interface supports search, selection, recommendations and synopsis details alongside Books. The database schema is installed; the TMDB import is still pending.
 
 `supabase/movies.sql` adds:
 - TMDB movie ID;
@@ -71,11 +71,19 @@ Afterword references book cover images through Open Library's Covers API rather 
 ## Next product steps
 
 1. Seed and validate the movie catalogue.
-2. Add a Books / Films mode switch without changing the visual identity.
-3. Build movie selection, persistent selection during search, and movie recommendation results.
+2. Export the public movie metadata snapshot and verify browser fallback recommendations.
+3. Merge the films branch after testing against the populated catalogue.
 4. Add explicit feedback signals such as save, not interested, already read/watched and rating.
 5. Introduce a shared taste representation across books and films.
 6. Add natural-language discovery on top of deterministic retrieval.
 7. Evaluate relevance, diversity, novelty and catalogue coverage before adding music.
 
 The core product question remains measurable: **how much relevance should Afterword trade for discovery?**
+
+## Outage behavior
+
+Public catalogue requests use bounded fetch calls. The transformer module is loaded only when recommendations are requested, so a model CDN failure does not prevent browsing. Book retrieval still falls back to Open Library.
+
+The film importer exports metadata without embeddings or credentials into `dist/data/movies.json`. The browser also retains up to 500 public film records locally. During an outage, film search uses these records and recommendations embed them with the same model. A notice distinguishes the saved collection from the full catalogue. The checked-in snapshot is empty until the first import succeeds.
+
+Search requests are cancelled and versioned so late responses cannot overwrite a different query or media mode.

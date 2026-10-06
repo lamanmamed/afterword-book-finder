@@ -64,6 +64,12 @@ const { data } = await supabase.rpc("match_books", {
 
 Recommendation text is grounded in actual shared subjects and the nearest selected book rather than being generated freely.
 
+## Reliability
+
+Catalogue requests time out after eight seconds. Books fall back to Open Library discovery when Supabase is unavailable. The interface loads independently of the transformer CDN; the model is requested when recommendations are needed.
+
+Films can use saved public metadata from previous catalogue requests or a bundled snapshot. Fallback recommendations embed those films in the browser and exclude the selected titles. The interface labels the smaller collection. A first-time visitor cannot use this fallback until a snapshot has been generated.
+
 ## Films
 
 The film catalogue follows the same basic approach as books.
@@ -75,7 +81,9 @@ pip install -r scripts/requirements.txt
 python scripts/seed_movies.py --pages-per-genre 3
 ```
 
-The seeding script expects `TMDB_READ_ACCESS_TOKEN` in your local `.env`.
+The seeding script expects `TMDB_READ_ACCESS_TOKEN`, `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in your local `.env`. It also writes `dist/data/movies.json`; commit that public metadata snapshot with the site after seeding.
+
+The live movie schema is installed, but the catalogue is still empty. This branch remains a draft until the TMDB import and real film recommendation checks are complete.
 
 ## Repository structure
 
@@ -147,3 +155,14 @@ Artwork is referenced through the source APIs rather than copied into this repos
 ## Stack
 
 **JavaScript · Transformers.js · gte-small · Open Library API · TMDB API · Python · Sentence Transformers · PostgreSQL · Supabase · pgvector**
+
+## GitHub Pages
+
+The deployment workflow publishes `dist/` after changes reach `main`. In repository **Settings → Pages**, choose **GitHub Actions** as the source, then run **Deploy Afterword**. The workflow does not enable Pages by itself. No deployment secrets are needed.
+
+## Checks
+
+```bash
+node --check dist/app.js
+node --test tests/catalog.test.mjs
+```

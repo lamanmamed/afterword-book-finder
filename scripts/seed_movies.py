@@ -16,6 +16,8 @@ The TMDB token is used only by this server-side script. Do not expose it in brow
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 import os
 import time
 from datetime import datetime
@@ -175,6 +177,7 @@ def main() -> None:
     parser.add_argument("--pages-per-genre", type=int, default=3)
     parser.add_argument("--min-votes", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--snapshot", default="dist/data/movies.json", help="Public metadata fallback written after a successful import")
     args = parser.parse_args()
 
     load_dotenv()
@@ -220,6 +223,13 @@ def main() -> None:
         client.table("movies").upsert(payload, on_conflict="tmdb_id").execute()
         print(f"Upserted {len(payload)} movies")
 
+    if not rows:
+        raise RuntimeError("No movies were collected; leaving the existing snapshot untouched")
+    snapshot = Path(args.snapshot)
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    public_rows = [{key: value for key, value in row.items() if key != "metadata_text"} for row in rows]
+    snapshot.write_text(json.dumps({"source": "TMDB", "movies": public_rows}, ensure_ascii=False) + "\n")
+    print(f"Saved {len(public_rows)} films to {snapshot}. Commit this file with the site to enable fallback for new visitors.")
     print("Done.")
 
 
