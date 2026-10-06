@@ -1,4 +1,4 @@
-import { fetchJSON, rpc } from "./catalog.js";
+import { fetchJSON, rpc, searchLocalMovies, validMovies } from "./catalog.js";
 
 const OPEN_LIBRARY_SEARCH = "https://openlibrary.org/search.json";
 const MODEL_ID = "Supabase/gte-small";
@@ -28,19 +28,57 @@ const starterBooks = [
   { key:"/works/OL27884690W", title:"Lessons in Chemistry", author:"Bonnie Garmus", isbn:["9780385547345"], first_publish_year:2022, subjects:["Historical fiction","Women scientists","Workplace"] }
 ];
 
-const selected = new Map();
+const bookSelections = new Map();
+const movieSelections = new Map();
+let selected = bookSelections;
+let activeMode = "books";
+
 const grid = document.getElementById("book-grid");
 const counter = document.getElementById("counter");
 const go = document.getElementById("recommend");
 const searchInput = document.getElementById("book-search");
 const noMatches = document.getElementById("no-matches");
+const modeButtons = [...document.querySelectorAll("[data-mode]")];
+const heroImages = [...document.querySelectorAll(".stack img")];
+const bookHeroSources = heroImages.map(img => img.src);
 
 let visibleBooks = starterBooks;
+let visibleMovies = [];
 let searchTimer = null;
 let searchController = null;
 let extractorPromise = null;
 let isRecommending = false;
 let searchVersion = 0;
+let movieFallbackPromise = null;
+const cachedMovies = new Map();
+try {
+  validMovies(JSON.parse(localStorage.getItem("afterword-movies-v1") || "[]"))
+    .forEach(movie => cachedMovies.set(movie.tmdb_id, movie));
+} catch { /* Storage is optional. */ }
+
+function rememberMovies(movies) {
+  movies.forEach(movie => cachedMovies.set(movie.tmdb_id, movie));
+  // Cache public metadata only, with a bounded size.
+  while (cachedMovies.size > 500) cachedMovies.delete(cachedMovies.keys().next().value);
+  try { localStorage.setItem("afterword-movies-v1", JSON.stringify([...cachedMovies.values()])); }
+  catch { /* Private browsing and quota limits must not block discovery. */ }
+}
+
+async function fallbackMovies() {
+  if (!movieFallbackPromise) {
+    movieFallbackPromise = fetchJSON("./data/movies.json")
+      .then(data => rememberMovies(validMovies(data.movies)))
+      .catch(() => { movieFallbackPromise = null; });
+  }
+  await movieFallbackPromise;
+  return [...cachedMovies.values()];
+}
+
+function movieStatus(message = "") {
+  const status = document.getElementById("catalog-status");
+  status.textContent = message;
+  status.hidden = !message;
+}
 
 function coverCandidates(book, size="M") {
   const urls = [];
@@ -96,12 +134,35 @@ function escapeHtml(value="") {
   }[ch]));
 }
 
+function moviePoster(movie, size="w342") {
+  return movie.poster_path ? `https://image.tmdb.org/t/p/${size}${movie.poster_path}` : "";
+}
+
+function normalizeMovie(row) {
+  return {
+    tmdb_id: Number(row.tmdb_id),
+    title: row.title || "Untitled",
+    original_title: row.original_title || row.title || "",
+    release_year: Number(row.release_year) || null,
+    genres: row.genres || [],
+    overview: row.overview || "",
+    poster_path: row.poster_path || null,
+    popularity: Number(row.popularity) || 0,
+    vote_average: Number(row.vote_average) || 0,
+    vote_count: Number(row.vote_count) || 0,
+    semantic: Number(row.similarity) || 0
+  };
+}
+
 function updateCounter() {
-  counter.textContent = `${selected.size} ${selected.size === 1 ? "book" : "books"} selected`;
+  const noun = activeMode === "movies"
+    ? (selected.size === 1 ? "film" : "films")
+    : (selected.size === 1 ? "book" : "books");
+  counter.textContent = `${selected.size} ${noun} selected`;
   go.disabled = selected.size < 2 || isRecommending;
 }
 
-function renderGrid(books) {
+function renderBookGrid(books) {
   visibleBooks = books;
   grid.innerHTML = "";
   noMatches.hidden = books.length !== 0;
@@ -141,6 +202,52 @@ function renderGrid(books) {
   updateCounter();
 }
 
+function renderMovieGrid(movies) {
+  visibleMovies = movies;
+  grid.innerHTML = "";
+  noMatches.hidden = movies.length !== 0;
+
+  movies.forEach(movie => {
+    const key = String(movie.tmdb_id);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "pick";
+    button.setAttribute("aria-pressed", String(selected.has(key)));
+    button.setAttribute("aria-label", `Select ${movie.title}`);
+
+    const image = moviePoster(movie);
+    const subtitle = [
+      movie.release_year,
+      (movie.genres || []).slice(0, 2).join(" · ")
+    ].filter(Boolean).join(" · ");
+
+    button.innerHTML = `
+      <span class="cover-wrap">
+        ${image ? `<img src="${image}" alt="Poster for ${escapeHtml(movie.title)}" loading="lazy">` : `<span aria-hidden="true" style="font-family:'Playfair Display',serif;font-size:34px;color:#6e7168">?</span>`}
+        <span class="check" aria-hidden="true">✓</span>
+      </span>
+      <span class="title">${escapeHtml(movie.title)}</span>
+      <span class="author">${escapeHtml(subtitle)}</span>
+    `;
+
+    button.addEventListener("click", () => {
+      if (selected.has(key)) selected.delete(key);
+      else selected.set(key, movie);
+      button.setAttribute("aria-pressed", String(selected.has(key)));
+      updateCounter();
+    });
+
+    grid.append(button);
+  });
+
+  updateCounter();
+}
+
+function renderGrid(items) {
+  if (activeMode === "movies") renderMovieGrid(items);
+  else renderBookGrid(items);
+}
+
 async function searchOpenLibrary(query, limit=24, signal) {
   const params = new URLSearchParams({
     q: query,
@@ -154,24 +261,55 @@ async function searchOpenLibrary(query, limit=24, signal) {
     .map(normalizeBook);
 }
 
+async function searchMovieCatalog(query="", limit=24, signal) {
+  try {
+    const data = await rpc("search_movies", { search_query: query, result_count: limit }, signal);
+    if (!Array.isArray(data)) throw new Error("Invalid catalogue response");
+    if (!query && !data.length) throw new Error("Empty film catalogue");
+    const movies = validMovies(data).map(normalizeMovie);
+    rememberMovies(movies);
+    return { movies, fallback: false };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    const movies = await fallbackMovies();
+    if (!movies.length) throw error;
+    return { movies: searchLocalMovies(movies, query, limit), fallback: true };
+  }
+}
+
 async function handleSearch() {
   const version = ++searchVersion;
+  const mode = activeMode;
   const query = searchInput.value.trim();
   searchController?.abort();
   searchController = new AbortController();
   const signal = searchController.signal;
-  if (query.length < 2) { renderGrid(starterBooks); return; }
+  const current = () => version === searchVersion && mode === activeMode;
   noMatches.hidden = true;
+  movieStatus();
   try {
-    const results = await searchOpenLibrary(query, 24, signal);
-    if (version !== searchVersion) return;
-    noMatches.textContent = "No books match your search.";
-    renderGrid(results);
+    if (mode === "movies") {
+      const result = await searchMovieCatalog(query, 24, signal);
+      if (!current()) return;
+      renderMovieGrid(result.movies);
+      updateHeroArtwork("movies", result.movies);
+      movieStatus(result.fallback ? "Showing the saved film collection while the full catalogue is unavailable." : "");
+      noMatches.textContent = result.fallback ? "No matches in the saved film collection. Try another title." : "No films match your search.";
+    } else {
+      const books = query.length < 2 ? starterBooks : await searchOpenLibrary(query, 24, signal);
+      if (!current()) return;
+      renderBookGrid(books);
+      noMatches.textContent = "No books match your search.";
+    }
   } catch (error) {
-    if (signal.aborted || version !== searchVersion) return;
-    console.warn(error);
-    noMatches.textContent = "Search is temporarily unavailable. Please try again.";
+    if (!current() || signal.aborted) return;
+    console.warn("Catalogue search unavailable", error);
+    grid.innerHTML = "";
+    noMatches.textContent = mode === "movies"
+      ? "Films are temporarily unavailable. Please try again later, or explore Books."
+      : "Search is temporarily unavailable. Please try again.";
     noMatches.hidden = false;
+    updateCounter();
   }
 }
 
@@ -502,9 +640,138 @@ async function buildRecommendations() {
     sections = await recommendationsFromLiveSearch(chosen, chosenEmbeddings, tasteVector);
   }
 
-  return { chosen, sections };
+  return { mode:"books", chosen, sections };
 }
 
+function movieMetadataText(movie) {
+  return [
+    movie.title,
+    (movie.genres || []).join(", "),
+    movie.overview,
+    movie.release_year ? `released ${movie.release_year}` : ""
+  ].filter(Boolean).join(". ");
+}
+
+async function embedMovies(movies) {
+  const extractor = await getExtractor();
+  const output = await extractor(movies.map(movieMetadataText), {
+    pooling: "mean",
+    normalize: true
+  });
+  return output.tolist();
+}
+
+function genreOverlap(a, b) {
+  const left = new Set((a.genres || []).map(x => x.toLowerCase()));
+  return (b.genres || []).filter(x => left.has(x.toLowerCase()));
+}
+
+function movieReason(candidate, chosen) {
+  let nearest = chosen[0];
+  let shared = [];
+  let bestOverlap = -1;
+
+  for (const film of chosen) {
+    const overlap = genreOverlap(film, candidate);
+    if (overlap.length > bestOverlap) {
+      bestOverlap = overlap.length;
+      nearest = film;
+      shared = overlap;
+    }
+  }
+
+  if (shared.length >= 2) {
+    return `Shares ${shared.slice(0,2).map(x => x.toLowerCase()).join(" and ")} with ${nearest.title}, while taking the story somewhere else.`;
+  }
+  if (shared.length === 1) {
+    return `If the ${shared[0].toLowerCase()} side of ${nearest.title} worked for you, this is worth a look.`;
+  }
+  return `It sits close to the overall mood of the films you chose without being an obvious repeat.`;
+}
+
+function diversifyMovies(items, limit=3) {
+  const result = [];
+  const usedTitles = new Set();
+  for (const item of items) {
+    const key = item.title.toLowerCase();
+    if (usedTitles.has(key)) continue;
+    result.push(item);
+    usedTitles.add(key);
+    if (result.length === limit) break;
+  }
+  return result;
+}
+
+function makeMovieSections(scored) {
+  const familiar = diversifyMovies(
+    [...scored].sort((a,b) => (b.semantic + b.overlap * 0.015) - (a.semantic + a.overlap * 0.015)),
+    3
+  );
+  const familiarIds = new Set(familiar.map(x => x.tmdb_id));
+
+  const remaining = [...scored].filter(x => !familiarIds.has(x.tmdb_id));
+  const adventurous = remaining
+    .filter(x => x.semantic > 0.2)
+    .sort((a,b) => (b.semantic - b.overlap * 0.025) - (a.semantic - a.overlap * 0.025));
+  const different = diversifyMovies(adventurous.length ? adventurous : remaining, 3);
+  const used = new Set([...familiar, ...different].map(x => x.tmdb_id));
+  const popularityValues = scored.map(x => x.popularityScore).sort((a,b) => a-b);
+  const medianPopularity = popularityValues[Math.floor(popularityValues.length / 2)] || 0;
+  const hidden = diversifyMovies(
+    [...scored]
+      .filter(x => !used.has(x.tmdb_id) && x.popularityScore <= medianPopularity && x.semantic > 0.18)
+      .sort((a,b) => b.semantic - a.semantic),
+    3
+  );
+  const more = diversifyMovies(
+    [...scored].filter(x => !used.has(x.tmdb_id)).sort((a,b) => b.semantic - a.semantic), 3
+  );
+  return [
+    { label:"Closest to your watchlist", sub:"Films nearest to the mix you chose.", movies:familiar },
+    { label:"Something different", sub:"Still connected to your taste, with more room for discovery.", movies:different },
+    hidden.length
+      ? { label:"Hidden gems", sub:"Strong matches with a lighter popularity signal.", movies:hidden }
+      : { label:"More to explore", sub:"A few more films from this collection.", movies:more }
+  ].filter(section => section.movies.length);
+}
+
+async function buildMovieRecommendations() {
+  const chosen = [...selected.values()];
+  const chosenEmbeddings = await embedMovies(chosen);
+  const tasteVector = meanVector(chosenEmbeddings);
+
+  let data;
+  let fallback = false;
+  try {
+    data = await rpc("match_movies", {
+      query_embedding: tasteVector,
+      match_count: 60,
+      excluded_ids: chosen.map(movie => movie.tmdb_id)
+    });
+    if (!Array.isArray(data) || data.length < 9) throw new Error("Not enough film candidates");
+    rememberMovies(validMovies(data).map(normalizeMovie));
+  } catch (error) {
+    const excluded = new Set(chosen.map(movie => movie.tmdb_id));
+    const candidates = (await fallbackMovies()).filter(movie => !excluded.has(movie.tmdb_id));
+    if (candidates.length < 3) throw new Error("Not enough saved films. Please try again when the catalogue returns.");
+    const embeddings = await embedMovies(candidates);
+    data = candidates.map((movie, index) => ({ ...movie, similarity: dot(tasteVector, embeddings[index]) }));
+    fallback = true;
+  }
+
+  const scored = data.map(row => {
+    const movie = normalizeMovie(row);
+    const overlap = chosen.reduce((n, selectedMovie) => n + genreOverlap(selectedMovie, movie).length, 0);
+    return {
+      ...movie,
+      overlap,
+      popularityScore: Math.log10((movie.vote_count || 0) + 10),
+      reason: movieReason(movie, chosen)
+    };
+  });
+
+  return { mode:"movies", chosen, fallback, sections:makeMovieSections(scored) };
+}
 
 function descriptionText(value) {
   if (!value) return "";
@@ -534,30 +801,52 @@ async function fetchSynopsis(book) {
   return "";
 }
 
-function openBookModal(book) {
+function openMediaModal(item, mode) {
   const modal = document.getElementById("book-modal");
+  const eyebrow = document.getElementById("modal-eyebrow");
   const title = document.getElementById("modal-title");
   const author = document.getElementById("modal-author");
   const image = document.getElementById("modal-cover");
   const synopsis = document.getElementById("modal-synopsis");
   const source = document.getElementById("modal-source");
 
-  title.textContent = book.title;
-  author.textContent = book.author;
-  const imageUrl = cover(book, "L");
+  title.textContent = item.title;
+
+  if (mode === "movies") {
+    eyebrow.textContent = "About this film";
+    author.textContent = [
+      item.release_year,
+      (item.genres || []).slice(0, 3).join(" · ")
+    ].filter(Boolean).join(" · ");
+
+    const imageUrl = moviePoster(item, "w500");
+    image.src = imageUrl;
+    image.alt = `Poster for ${item.title}`;
+    image.hidden = !imageUrl;
+    synopsis.textContent = item.overview || "No synopsis is available for this film yet.";
+    source.href = `https://www.themoviedb.org/movie/${item.tmdb_id}`;
+    source.textContent = "View on TMDB ↗";
+    modal.showModal();
+    return;
+  }
+
+  eyebrow.textContent = "About this book";
+  author.textContent = item.author;
+  const imageUrl = cover(item, "L");
   image.src = imageUrl;
-  image.alt = `Cover of ${book.title}`;
+  image.alt = `Cover of ${item.title}`;
   image.hidden = !imageUrl;
   if (imageUrl) {
     image.hidden = false;
-    attachCoverFallback(image, book, "L");
+    attachCoverFallback(image, item, "L");
   }
   synopsis.textContent = "Loading synopsis…";
-  source.href = `https://openlibrary.org${book.key}`;
+  source.href = `https://openlibrary.org${item.key}`;
+  source.textContent = "View on Open Library ↗";
 
   modal.showModal();
 
-  fetchSynopsis(book)
+  fetchSynopsis(item)
     .then(text => {
       synopsis.textContent = text || "No synopsis is available from Open Library for this edition yet.";
     })
@@ -574,45 +863,73 @@ document.getElementById("book-modal").addEventListener("click", event => {
   if (event.target === event.currentTarget) event.currentTarget.close();
 });
 
+function recommendationImage(item, mode) {
+  return mode === "movies" ? moviePoster(item) : cover(item);
+}
+
+function recommendationSubtitle(item, mode) {
+  if (mode === "movies") {
+    return [
+      item.release_year,
+      (item.genres || []).slice(0, 2).join(" · ")
+    ].filter(Boolean).join(" · ");
+  }
+  return item.author;
+}
+
 function renderRecommendationResults(result) {
+  const mode = result.mode;
+  const isMovie = mode === "movies";
   document.getElementById("result-intro").textContent =
-    `Inspired by ${result.chosen.map(b => b.title).slice(0,2).join(" and ")}${result.chosen.length > 2 ? " and more" : ""}.`;
+    `Inspired by ${result.chosen.map(x => x.title).slice(0,2).join(" and ")}${result.chosen.length > 2 ? " and more" : ""}.`;
+
+  if (result.fallback) document.getElementById("result-intro").textContent += " From the saved film collection.";
+
+  document.getElementById("back").textContent = isMovie ? "← Change my films" : "← Change my books";
+  document.getElementById("result-eyebrow").textContent = isMovie ? "Your watchlist begins here" : "Your reading list begins here";
+  document.getElementById("result-title").textContent = isMovie ? "For your next watch." : "For your next chapter.";
 
   document.getElementById("collections").innerHTML = result.sections
-    .map((section, index) => `
-      <section class="collection">
-        <div class="collection-head">
-          <div>
-            <h2>${escapeHtml(section.label)}</h2>
-            <p>${escapeHtml(section.sub)}</p>
+    .map((section, index) => {
+      const items = section.movies || section.books || [];
+      return `
+        <section class="collection">
+          <div class="collection-head">
+            <div>
+              <h2>${escapeHtml(section.label)}</h2>
+              <p>${escapeHtml(section.sub)}</p>
+            </div>
+            <span class="collection-index">0${index + 1}</span>
           </div>
-          <span class="collection-index">0${index + 1}</span>
-        </div>
-        <div class="rec-grid">
-          ${section.books.map(book => {
-            const image = cover(book);
-            return `
-              <button type="button" class="rec-card" data-book-key="${escapeHtml(book.key)}" aria-label="Read about ${escapeHtml(book.title)}">
-                ${image ? `<img src="${image}" alt="Cover of ${escapeHtml(book.title)}" loading="lazy">` : ""}
-                <span class="rec-copy">
-                  <span class="title">${escapeHtml(book.title)}</span>
-                  <span class="author">${escapeHtml(book.author)}</span>
-                  <span class="why">${escapeHtml(book.reason)}</span>
-                  <span class="details-cue">Read synopsis →</span>
-                </span>
-              </button>
-            `;
-          }).join("")}
-        </div>
-      </section>
-    `).join("");
+          <div class="rec-grid">
+            ${items.map(item => {
+              const image = recommendationImage(item, mode);
+              const key = isMovie ? String(item.tmdb_id) : item.key;
+              return `
+                <button type="button" class="rec-card" data-media-key="${escapeHtml(key)}" aria-label="Read about ${escapeHtml(item.title)}">
+                  ${image ? `<img src="${image}" alt="${isMovie ? "Poster for" : "Cover of"} ${escapeHtml(item.title)}" loading="lazy">` : ""}
+                  <span class="rec-copy">
+                    <span class="title">${escapeHtml(item.title)}</span>
+                    <span class="author">${escapeHtml(recommendationSubtitle(item, mode))}</span>
+                    <span class="why">${escapeHtml(item.reason)}</span>
+                    <span class="details-cue">${isMovie ? "Read synopsis" : "Read synopsis"} →</span>
+                  </span>
+                </button>
+              `;
+            }).join("")}
+          </div>
+        </section>
+      `;
+    }).join("");
 
-  const bookByKey = new Map(result.sections.flatMap(section => section.books).map(book => [book.key, book]));
-  document.querySelectorAll(".rec-card[data-book-key]").forEach(card => {
-    const book = bookByKey.get(card.dataset.bookKey);
-    if (book) attachCoverFallback(card.querySelector("img"), book, "M");
+  const allItems = result.sections.flatMap(section => section.movies || section.books || []);
+  const byKey = new Map(allItems.map(item => [isMovie ? String(item.tmdb_id) : item.key, item]));
+
+  document.querySelectorAll(".rec-card[data-media-key]").forEach(card => {
+    const item = byKey.get(card.dataset.mediaKey);
+    if (!isMovie && item) attachCoverFallback(card.querySelector("img"), item, "M");
     card.addEventListener("click", () => {
-      if (book) openBookModal(book);
+      if (item) openMediaModal(item, mode);
     });
   });
 }
@@ -622,19 +939,27 @@ async function showRecommendations() {
 
   isRecommending = true;
   go.disabled = true;
+  modeButtons.forEach(button => { button.disabled = true; });
+  searchInput.disabled = true;
   const oldText = go.innerHTML;
-  go.textContent = "Finding your books…";
+  go.textContent = activeMode === "movies" ? "Finding your films…" : "Finding your books…";
 
   try {
-    const result = await buildRecommendations();
+    const result = activeMode === "movies"
+      ? await buildMovieRecommendations()
+      : await buildRecommendations();
     renderRecommendationResults(result);
     location.hash = "recommendations";
     route();
   } catch (error) {
     console.error(error);
-    alert("I couldn't build recommendations just now. Please try again in a moment.");
+    alert(activeMode === "movies"
+      ? "Film recommendations are temporarily unavailable. Please try again later, or explore Books."
+      : "I couldn't build recommendations just now. Please try again in a moment.");
   } finally {
     isRecommending = false;
+    modeButtons.forEach(button => { button.disabled = false; });
+    searchInput.disabled = false;
     go.innerHTML = oldText;
     updateCounter();
   }
@@ -650,6 +975,72 @@ function route() {
   if (!result && location.hash === "#recommendations") location.replace("#choose");
   if (result) window.scrollTo(0, 0);
 }
+
+function updateHeroArtwork(mode, movies=[]) {
+  if (mode === "books") {
+    heroImages.forEach((img, index) => {
+      img.src = bookHeroSources[index];
+    });
+    return;
+  }
+
+  const posters = movies.filter(movie => movie.poster_path).slice(0, 3);
+  if (posters.length < 3) return;
+  heroImages.forEach((img, index) => {
+    img.src = moviePoster(posters[index], "w500");
+  });
+}
+
+function updateModeCopy() {
+  const isMovie = activeMode === "movies";
+  document.getElementById("nav-find").textContent = isMovie ? "Find a film" : "Find a book";
+  document.getElementById("hero-title").innerHTML = isMovie ? "Find your<br><em>next film.</em>" : "Find your<br><em>next book.</em>";
+  document.getElementById("hero-copy").textContent = isMovie
+    ? "Tell us which films stayed with you. We’ll find a few more worth adding to your watchlist."
+    : "Tell us which stories stayed with you. We’ll find a few more worth making room for on your shelf.";
+  document.getElementById("hero-step-two").textContent = isMovie ? "02 / Discover new films" : "02 / Discover new reads";
+  document.getElementById("choice-heading").textContent = isMovie ? "Which films have you enjoyed?" : "Which of these have you enjoyed?";
+  document.getElementById("choice-copy").textContent = "Pick at least two. There’s no wrong combination.";
+  document.getElementById("selection-hint").textContent = isMovie ? "A few good films are all we need." : "A few good books are all we need.";
+  searchInput.placeholder = isMovie ? "Search by film title" : "Search by title or author";
+  searchInput.setAttribute("aria-label", searchInput.placeholder);
+  noMatches.textContent = isMovie ? "No films match your search." : "No books match your search.";
+}
+
+async function switchMode(mode) {
+  if (isRecommending || !["books", "movies"].includes(mode) || mode === activeMode) return;
+  clearTimeout(searchTimer);
+  ++searchVersion;
+  searchController?.abort();
+  movieStatus();
+
+  activeMode = mode;
+  selected = activeMode === "movies" ? movieSelections : bookSelections;
+  modeButtons.forEach(button => {
+    button.setAttribute("aria-pressed", String(button.dataset.mode === activeMode));
+  });
+
+  searchInput.value = "";
+  document.getElementById("collections").innerHTML = "";
+  if (location.hash === "#recommendations") location.hash = "choose";
+  updateModeCopy();
+
+  if (activeMode === "books") {
+    updateHeroArtwork("books");
+    renderBookGrid(starterBooks);
+    return;
+  }
+
+  grid.innerHTML = "";
+  updateCounter();
+  noMatches.textContent = "Loading films…";
+  noMatches.hidden = false;
+  await handleSearch();
+}
+
+modeButtons.forEach(button => {
+  button.addEventListener("click", () => switchMode(button.dataset.mode));
+});
 
 go.addEventListener("click", showRecommendations);
 document.getElementById("back").addEventListener("click", () => {
